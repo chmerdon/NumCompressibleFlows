@@ -108,7 +108,7 @@ function main(;
     densitytype = ExponentialDensity,
     eostype = IdealGasLaw,
     gridtype = Mountain2D,
-    bonus_quadorder = 2,
+    bonus_quadorder = 4,
     bonus_quadorder_f = bonus_quadorder,
     bonus_quadorder_g = bonus_quadorder,
     bonus_quadorder_bnd = bonus_quadorder,
@@ -124,8 +124,8 @@ function main(;
 #grid_builder, kernel_gravity!, kernel_rhs!, u!, ∇u!, ϱ!, τfac = load_testcase_data(testcase; laplacian_in_rhs = laplacian_in_rhs,Akbas_example=Akbas_example, M = M, c = c, μ = μ,γ=γ, ufac = ufac)
 ϱ!, kernel_gravity!, kernel_rhs!, u!, ∇u! = prepare_data(velocitytype, densitytype, eostype; laplacian_in_rhs = laplacian_in_rhs, pressure_in_f = pressure_in_f, M = M, c = c, μ = μ, λ = λ,γ=γ, ufac = ufac, conv_parameter =conv_parameter )
 
-xgrid = NumCompressibleFlows.grid(gridtype; nref = 3)
-M_exact = integrate(xgrid, ON_CELLS, ϱ!, 1; quadorder = 20) 
+xgrid = NumCompressibleFlows.grid(gridtype; nref = 4)
+M_exact = integrate(xgrid, ON_CELLS, ϱ!, 1; quadorder = 30) 
 M = M_exact
  τ = μ / (c*order^2 * M * sqrt(τfac)*ufac) # time step for pseudo timestepping
  #τ = μ / (4*order^2 * M * sqrt(τfac)) 
@@ -162,10 +162,10 @@ sleep(1)
 PD = ProblemDescription("Stokes problem")
 assign_unknown!(PD, u)
 assign_operator!(PD, BilinearOperator([grad(u)]; factor = μ, store = true, kwargs...))
-assign_operator!(PD, BilinearOperator([div_u]; factor = -λ, store = true, kwargs...)) # Marwa div term 
+assign_operator!(PD, BilinearOperator([div_u]; factor = λ, store = true, kwargs...)) # Marwa div term 
 if conv_parameter > 0
     assign_operator!(PD, LinearOperator(kernel_convection_linearoperator!, [
-    id_u], [id(u),grad(u),id(ϱ)]; factor = -1, kwargs...))
+    id_u], [id(u),grad(u),id(ϱ)]; quadorder = 2*order + 1, factor = -1, kwargs...))
 end
 
 # Start adding hom boundary data 
@@ -174,8 +174,9 @@ if length(rhom) > 0
     assign_operator!(PD, HomogeneousBoundaryData(u; regions = rhom, kwargs...))
 end
 if length(rinflow) > 0 || length(routflow) > 0
-    assign_operator!(PD, InterpolateBoundaryData(u, u!; bonus_quadorder = bonus_quadorder_bnd, regions = union(rinflow,routflow), kwargs...))
+    assign_operator!(PD, InterpolateBoundaryData(u, u!; bonus_quadorder = bonus_quadorder_bnd, regions = union(rinflow, routflow), kwargs...))
 end
+
 # 
 if kernel_rhs! !== nothing
     assign_operator!(PD, LinearOperator(kernel_rhs!, [id_u]; factor = 1, store = true, bonus_quadorder = bonus_quadorder_f, kwargs...))
@@ -196,7 +197,7 @@ if pressure_stab > 0
 end
 assign_operator!(PDT, BilinearOperator([id(ϱ)]; quadorder = 2 * (order - 1), factor = 1 / τ, store = true, kwargs...)) # for (1/τ) (ϱ^n+1,λ_h)
 assign_operator!(PDT, LinearOperator([id(ϱ)], [id(ϱ)]; quadorder = 2 * (order - 1), factor = 1 / τ, kwargs...)) # for (1/τ) (ϱ^n,λ_h) on the rhs 
-assign_operator!(PDT, BilinearOperatorDG(kernel_upwind!, [jump(id(ϱ))], [this(id(ϱ)), other(id(ϱ))], [id(u)]; quadorder = order + 1, entities = ON_IFACES, kwargs...))
+assign_operator!(PDT, BilinearOperatorDG(kernel_upwind!, [jump(id(ϱ))], [this(id(ϱ)), other(id(ϱ))], [id(u)]; factor = 1, quadorder = order+1, entities = ON_IFACES, kwargs...))
 # [jump(id(ϱ))] is the test function [λ]
 # [jump(id(ϱ))]is test function lambda , [this(id(ϱ)), other(id(ϱ))] is the the flux multlplied by lambda_upwind. [id(u)] is the function u that is needed
 # Start adding inflow 
@@ -204,8 +205,8 @@ if length(rinflow) > 0
     assign_operator!(PDT, LinearOperatorDG(kernel_inflow!(u!,ϱ!), [id(ϱ)]; factor = -1, bonus_quadorder = bonus_quadorder_bnd, entities = ON_BFACES, regions = rinflow, kwargs...))    
 end
 if length(routflow) > 0
-    assign_operator!(PDT, LinearOperatorDG(kernel_inflow!(u!,ϱ!), [id(ϱ)]; factor = -1, bonus_quadorder = bonus_quadorder_bnd, entities = ON_BFACES, regions = routflow, kwargs...))    
-    #assign_operator!(PDT, LinearOperatorDG(kernel_outflow!(u!), [id(ϱ)], [id(ϱ)]; factor = -1, bonus_quadorder = bonus_quadorder_bnd, entities = ON_BFACES, regions = routflow, kwargs...))    
+    #assign_operator!(PDT, LinearOperatorDG(kernel_inflow!(u!,ϱ!), [id(ϱ)]; factor = -1, bonus_quadorder = bonus_quadorder_bnd, entities = ON_BFACES, regions = routflow, kwargs...))    
+    assign_operator!(PDT, BilinearOperator(kernel_outflow!(u!), [id(ϱ)]; factor = 1, bonus_quadorder = bonus_quadorder_bnd, entities = ON_BFACES, regions = routflow, kwargs...))    
 end
    
 
@@ -226,10 +227,13 @@ for lvl in 1:nrefs
     sol = FEVector(FES; tags = [u, ϱ, p]) # create solution vector and tag blocks with the unknowns (u,ρ,p) that has the same order as FETypes
 
     ## initial guess
-    fill!(sol[ϱ], M) # fill block corresbonding to unknown ρ with initial value M, in Algorithm it is M/|Ω|?? We could write it as M/|Ω| and delete area from down there
+    fill!(sol[ϱ], M) # fill block corresponding to unknown ρ with initial value M, in Algorithm it is M/|Ω|?? We could write it as M/|Ω| and delete area from down there
     interpolate!(sol[u], u!)
     interpolate!(sol[ϱ], ϱ!)
     NDofs[lvl] = length(sol.entries)
+
+
+    M = sum(evaluate(MassIntegrator, sol))
 
     ## solve the two problems iteratively [1] >> [2] >> [1] >> [2] ...
     SC1 = SolverConfiguration(PD; init = sol, maxiterations = 1, target_residual = target_residual, constant_matrix = true, kwargs...)
@@ -238,7 +242,7 @@ for lvl in 1:nrefs
 
     ## calculate mass
     Mend = sum(evaluate(MassIntegrator, sol))
-    @info M, Mend
+    @info "M exact/start/end/difference = $(M_exact)/$M/$Mend/$(M-Mend)"
 
     ## calculate error
     error = evaluate(ErrorIntegratorExact, sol)

@@ -46,11 +46,18 @@ function grid(::Type{<:UnstructuredUnitSquare}; nref = 1, kwargs...)
     return grid_builder(nref)
 end
 
+function grid(::Type{<:UniformUnitSquare}; nref = 1, kwargs...)
+    grid_builder = (nref) -> uniform_refine(simplexgrid(0:0.5:1,0:0.5:1), nref)
+    return grid_builder(nref)
+end
 
 streamfunction(::Type{<:ZeroVelocity};ufac = 1, kwargs...) = 0* ufac *x
 streamfunction(::Type{<:ConstantVelocity};ufac = 1, kwargs...) = - ufac * y
 streamfunction(::Type{<:P7VortexVelocity};ufac = 1, kwargs...) = ufac * x^2 * y^2 * (x - 1)^2 * (y - 1)^2
-streamfunction(::Type{<:RigidBodyRotation};ufac = 1, kwargs...) = (ufac/2) * (x^2 + y^2) 
+streamfunction(::Type{<:RigidBodyRotation};ufac = 1, kwargs...) = (ufac/2) * (x^2 + y^2)
+
+already_divfree(::Type{<:TestVelocity}) = false
+already_divfree(::Type{<:RigidBodyRotation}) = true
 
 inflow_regions(::Type{<:ZeroVelocity}, gridtype) = []
 inflow_regions(::Type{<:ConstantVelocity}, gridtype) = [1,3,4]
@@ -63,7 +70,7 @@ outflow_regions(::Type{<:RigidBodyRotation}, ::Type{<:UnitSquare}) = [3,4]
 
 
 #density(::Type{<:ExponentialDensity}; c = 1, M = 1, kwargs...) = exp(- y^3 / 3 * c) / M 
-density(::Type{<:ExponentialDensityRBR}; c = 1, M = 1, kwargs...) = exp( (x^2+y^2) /  (2*c)) / M 
+density(::Type{<:ExponentialDensityRBR}; c = 1, M = 1, kwargs...) = M * exp( (x^2+y^2) /  (2*c))
 density(::Type{<:ExponentialDensity}; c = 1, M = 1, kwargs...) = exp(- y /  c) / M  # e^(-y/c_M)/ M  ... Objection: whrere is x^3 ?
 density(::Type{<:LinearDensity}; c = 1, M = 1, kwargs...) = ( 1+(x-(1/2))/c )/M 
 
@@ -71,14 +78,18 @@ density(::Type{<:LinearDensity}; c = 1, M = 1, kwargs...) = ( 1+(x-(1/2))/c )/M
 function prepare_data(TVT::Type{<:TestVelocity}, TDT::Type{<:TestDensity}, EOSType::Type{<:EOSType}; M = 1, c = 1, μ = 1, ufac = 1, laplacian_in_rhs = true, pressure_in_f = false , λ = -2*μ / 3,conv_parameter = 0, kwargs...)
 
     ## get stream function and density for test types
-    ξ = streamfunction(TVT;ufac = ufac, kwargs...)
-    ϱ = density(TDT; kwargs...)
+    ξ = streamfunction(TVT; ufac = ufac, kwargs...)
+    ϱ = density(TDT; c = c, M = M, kwargs...)
     
     ## gradient of stream function
     ∇ξ = Symbolics.gradient(ξ, [x, y])
 
     ## velocity u = curl ξ / ϱ
-    u = [-∇ξ[2], ∇ξ[1]] ./ ϱ
+    if already_divfree(TVT)
+        u = [-∇ξ[2], ∇ξ[1]]
+    else 
+        u = [-∇ξ[2], ∇ξ[1]] ./ ϱ
+    end
 
     ## gradient of velocity
     ∇u = Symbolics.jacobian(u, [x, y])
@@ -131,10 +142,9 @@ function prepare_data(TVT::Type{<:TestVelocity}, TDT::Type{<:TestDensity}, EOSTy
             
         else
             f = - μ * Δu  - λ*∇divu + conv  # f = L(u)
-
-        
+        end
     end
-end
+    @info f, g
 
 
 ## Christian's def of f & g 
